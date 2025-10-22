@@ -1,103 +1,119 @@
-# Identity Provider Device Management Service
+# Identity Provider Platform
 
-This project implements a Spring Boot microservice that manages mobile devices for customers. It exposes three REST endpoints to register devices, enable biometrics, and detag devices while persisting data in an in-memory H2 database that mimics the provided `DEVICE_MASTER` schema.
+This repository hosts two Spring Boot microservices that together deliver device management and OAuth 2.0 style access token capabilities.
+
+- **device-management** – manages device registration, biometric activation, and detagging workflows backed by an H2 schema that mirrors `DEVICE_MASTER` and `DEVICE_MASTER_HISTORY` tables.
+- **access-token** – issues, validates, revokes JWT access tokens and publishes an OAuth 2.0 compatible JWKS endpoint suitable for downstream services that need to validate bearer tokens.
+
+Both services are packaged as individual Gradle modules so they can be built, tested, and deployed independently.
 
 ## Prerequisites
 
-- Java 17+
-- Gradle 8.14+ (or use the provided Gradle wrapper once plugin artifacts are available)
+- Java 21+
+- Gradle 8.7+ (or use the Gradle wrapper once plugin artifacts are available locally)
+- Required Spring Boot artifacts published to a repository reachable from this environment (for example `mavenLocal()`), because external network access is not guaranteed.
 
-## Running locally
+## Project layout
 
-```bash
-gradle bootRun
+```
+identity-provider/
+├── device-management/    # Device lifecycle service
+│   └── src/...
+├── access-token/         # JWT issuance & introspection service
+│   └── src/...
+├── build.gradle.kts      # Shared Gradle configuration
+└── settings.gradle.kts   # Module declarations
 ```
 
-The application starts on `http://localhost:8080` and automatically creates the schema defined in `schema.sql`. If you are
-operating in an offline environment, make sure the Spring Boot Gradle plugin and dependencies are published to a repository
-declared in `build.gradle.kts` (for example `mavenLocal()`).
+## Building
 
-## Running tests
+To build all modules:
+
+```bash
+gradle build
+```
+
+To build a specific microservice:
+
+```bash
+cd device-management
+gradle build
+```
+
+or
+
+```bash
+cd access-token
+gradle build
+```
+
+> **Tip:** When running from the repository root you can also target a single module by using Gradle's project selector, for example `gradle :device-management:bootRun`.
+
+## Running the services locally
+
+### Device management service
+
+```bash
+gradle :device-management:bootRun
+```
+
+- Starts on [http://localhost:8080](http://localhost:8080)
+- Exposes `/devices`, `/devices/biometrics`, and `/devices/detag`
+- Uses an in-memory H2 database; schema is bootstrapped from [`device-management/src/main/resources/schema.sql`](device-management/src/main/resources/schema.sql)
+
+### Access token service
+
+```bash
+gradle :access-token:bootRun
+```
+
+- Starts on [http://localhost:8081](http://localhost:8081)
+- Exposes `/oauth/token`, `/oauth/token/introspect`, `/oauth/token/revoke`, and `/.well-known/jwks.json`
+- Issues RSA signed JWTs with RS256 and publishes public key material via JWKS
+
+## Testing
+
+Execute the full test suite:
 
 ```bash
 gradle test
 ```
 
-> **Note:** In restricted environments you may need to publish the Spring Boot Gradle plugin and required artifacts to a
-> repository available to the build (e.g., a corporate Artifactory mirror or your local Maven cache) before this command can
-> succeed.
+Run module-specific tests:
 
-## API overview
-
-### 1. Register a device
-
-`POST /devices`
-
-Headers:
-
-- `Content-Type: application/json`
-- `Idempotency-Key` *(optional but recommended)*
-
-Request body:
-
-```json
-{
-  "cid": "C12345678",
-  "deviceOs": "ANDROID",
-  "deviceOsVer": "14",
-  "model": "Pixel 8",
-  "appVersion": "1.4.3",
-  "lang": "en",
-  "imeNo": "352011119999999",
-  "deviceOsId": "ab12cd...ef",
-  "userAgent": "MyApp/1.4.3 Android",
-  "isTouchEnabled": true,
-  "biometricType": "NONE",
-  "deviceNickName": "Akash's Pixel",
-  "attestationProof": "BASE64..."
-}
+```bash
+gradle :device-management:test
 ```
 
-- Returns **201 Created** when a new row is inserted.
-- Returns **200 OK** when a duplicate is detected via the `Idempotency-Key` cache or existing device fingerprint (CID + IME NO / OS ID / MODEL & OS VER).
-
-### 2. Enable biometrics
-
-`POST /devices/biometrics`
-
-```json
-{
-  "cid": "C12345678",
-  "deviceId": "7c1a3c34-6f54-4d8a-bb2a-4f3f6e1a4c1e",
-  "biometricType": "FINGERPRINT",
-  "isTouchEnabled": true,
-  "attestationProof": "BASE64..."
-}
+```bash
+gradle :access-token:test
 ```
 
-- Returns **200 OK** with the updated device projection.
-- Returns **404** if the device does not belong to the customer.
-- Returns **409** if the device was registered with a different biometric type.
+The device management tests exercise the complete registration → biometrics → detag lifecycle. The access token tests cover issuing a token, introspection, revocation, and JWKS discovery.
 
-### 3. Detag a device
+## API highlights
 
-`POST /devices/detag`
+### Device management
 
-```json
-{
-  "cid": "C12345678",
-  "deviceId": "7c1a3c34-6f54-4d8a-bb2a-4f3f6e1a4c1e",
-  "reason": "user request",
-  "revokeSessions": true,
-  "hardDelete": false
-}
-```
+| Endpoint | Description |
+| --- | --- |
+| `POST /devices` | Registers a device with idempotency support. Accepts `Idempotency-Key` header to avoid duplicates. |
+| `POST /devices/biometrics` | Enables biometrics for an existing device, enforcing type constraints. |
+| `POST /devices/detag` | Moves a device to history, revokes sessions (event hook), and returns status `I`. |
 
-- Copies the device to `device_master_history`, clears volatile fields, marks the record inactive (`status = I`), and optionally deletes the active record.
-- Returns **200 OK** with the final device projection.
+Full request/response samples are available in the controller Javadoc and the integration tests.
 
-## Database
+### Access token
 
-The database schema is created automatically via [`src/main/resources/schema.sql`](src/main/resources/schema.sql) and models the supplied table definitions for `device_master`, `device_master_history`, and an additional table to persist idempotency responses.
+| Endpoint | Description |
+| --- | --- |
+| `POST /oauth/token` | Implements the OAuth 2.0 `client_credentials` grant and returns a signed JWT. |
+| `POST /oauth/token/introspect` | Validates a token's signature, expiration, revocation status, and returns token metadata. |
+| `POST /oauth/token/revoke` | Revokes an issued token so subsequent introspection reports `active=false`. |
+| `GET /oauth/.well-known/jwks.json` | Publishes the RSA public key set for downstream verification. |
 
-You can inspect the H2 console at `http://localhost:8080/h2-console` (JDBC URL: `jdbc:h2:mem:identitydb`).
+Tokens are signed with RS256 using an ephemeral key pair generated at startup. Client secrets are stored using SHA-256 hashing and validated during token issuance.
+
+## Offline and air-gapped environments
+
+The build scripts are configured to prefer `mavenLocal()` and a local `lib/` flat directory for dependencies. If your environment restricts outbound network access you must pre-populate those locations with the Spring Boot plugin, starters, and any third-party dependencies required by the services.

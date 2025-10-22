@@ -5,4 +5,7 @@ pluginManagement {
     }
 }
 
-rootProject.name = "DeviceManagement"
+rootProject.name = "identity-provider"
+
+include("device-management")
+include("access-token")

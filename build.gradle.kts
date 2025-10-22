@@ -1,48 +1,40 @@
 plugins {
-    id("java")
-    id("org.springframework.boot") version "3.2.5"
-    id("io.spring.dependency-management") version "1.1.5"
+    id("org.springframework.boot") version "3.5.5" apply false
+    id("io.spring.dependency-management") version "1.1.7" apply false
+    id("java") apply false
 }
 
-group = "com.example"
-version = "0.0.1-SNAPSHOT"
+allprojects {
+    group = "com.example"
+    version = "0.0.1-SNAPSHOT"
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
-}
-
-tasks.withType<JavaCompile> {
-    options.compilerArgs.add("-parameters")
-}
-
-configurations {
-    compileOnly {
-        extendsFrom(configurations.annotationProcessor.get())
+    repositories {
+        mavenLocal()
+        flatDir {
+            dirs("lib")
+        }
     }
 }
 
-repositories {
-    mavenLocal()
-    mavenCentral()
-    flatDir {
-        dirs("lib")
+subprojects {
+    apply(plugin = "java")
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
-}
 
-dependencies {
-    implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
-    implementation("org.springframework.boot:spring-boot-starter-validation")
-    runtimeOnly("com.h2database:h2")
+    tasks.withType<JavaCompile> {
+        options.compilerArgs.add("-parameters")
+    }
 
-    testImplementation("org.springframework.boot:spring-boot-starter-test")
-}
+    configurations {
+        compileOnly {
+            extendsFrom(configurations.annotationProcessor.get())
+        }
+    }
 
-tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-}
-
-tasks.withType<Test> {
-    useJUnitPlatform()
+    tasks.withType<Test> {
+        useJUnitPlatform()
+    }
 }
