@@ -1,11 +1,9 @@
+rootProject.name = "identity-provider"
+include("access-token", "device-management")
+
 pluginManagement {
     repositories {
-        mavenLocal()
         gradlePluginPortal()
+        mavenCentral()
     }
 }
-
-rootProject.name = "identity-provider"
-
-include("device-management")
-include("access-token")

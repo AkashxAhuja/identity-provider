@@ -1,7 +1,9 @@
+import org.gradle.api.plugins.JavaPluginExtension
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+
 plugins {
     id("org.springframework.boot") version "3.5.5" apply false
     id("io.spring.dependency-management") version "1.1.7" apply false
-    id("java") apply false
 }
 
 allprojects {
@@ -9,28 +11,20 @@ allprojects {
     version = "0.0.1-SNAPSHOT"
 
     repositories {
+        mavenCentral()
         mavenLocal()
-        flatDir {
-            dirs("lib")
-        }
+        flatDir { dirs("lib") } // keep only if you actually use local JARs
     }
 }
 
 subprojects {
-    apply(plugin = "java")
+    // Apply Java to every module
+    plugins.apply("java")
 
-    java {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-    }
-
-    tasks.withType<JavaCompile> {
-        options.compilerArgs.add("-parameters")
-    }
-
-    configurations {
-        compileOnly {
-            extendsFrom(configurations.annotationProcessor.get())
+    // Configure Java toolchain for every module (Gradle 8.13)
+    extensions.configure<JavaPluginExtension> {
+        toolchain {
+            languageVersion.set(JavaLanguageVersion.of(21))
         }
     }
 
