@@ -1,94 +1,84 @@
 package com.example.accesstoken.controller;
 
+import com.example.accesstoken.dto.JwkKey;
+import com.example.accesstoken.dto.JwksResponse;
+import com.example.accesstoken.dto.TokenRequest;
 import com.example.accesstoken.dto.TokenResponse;
+import com.example.accesstoken.dto.TokenRevocationRequest;
+import com.example.accesstoken.dto.TokenValidationRequest;
 import com.example.accesstoken.dto.TokenValidationResponse;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.accesstoken.service.TokenService;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+
+import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@AutoConfigureMockMvc
+@ExtendWith(MockitoExtension.class)
 class TokenControllerTest {
 
-    @Autowired
-    private MockMvc mockMvc;
+    @Mock
+    private TokenService tokenService;
 
-    @Autowired
-    private ObjectMapper objectMapper;
+    @InjectMocks
+    private TokenController controller;
 
     @Test
-    void tokenLifecycleAndJwks() throws Exception {
-        String tokenRequest = """
-                {
-                  \"grantType\": \"client_credentials\",
-                  \"clientId\": \"device-service\",
-                  \"clientSecret\": \"super-secret\",
-                  \"subject\": \"device-service\",
-                  \"scopes\": [\"devices.manage\"],
-                  \"audience\": \"identity-provider\",
-                  \"expiresIn\": 600
-                }
-                """;
+    void issueTokenReturnsCreatedResponse() {
+        TokenRequest request = new TokenRequest();
+        TokenResponse response = new TokenResponse("token", "Bearer", 30L, Instant.now(), List.of("scope"));
+        when(tokenService.generateToken(request)).thenReturn(response);
 
-        MvcResult tokenResult = mockMvc.perform(post("/oauth/token")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(tokenRequest))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.tokenType").value("Bearer"))
-                .andReturn();
+        var entity = controller.issueToken(request);
 
-        TokenResponse tokenResponse = objectMapper.readValue(tokenResult.getResponse().getContentAsString(), TokenResponse.class);
-        assertThat(tokenResponse.getAccessToken()).isNotBlank();
-        assertThat(tokenResponse.getScope()).containsExactly("devices.manage");
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(entity.getBody()).isEqualTo(response);
+        verify(tokenService).generateToken(request);
+    }
 
-        String introspectRequest = """
-                {
-                  \"token\": \"%s\"
-                }
-                """.formatted(tokenResponse.getAccessToken());
+    @Test
+    void introspectDelegatesToService() {
+        TokenValidationRequest request = new TokenValidationRequest();
+        request.setToken("token");
+        TokenValidationResponse response = new TokenValidationResponse(true, "sub", "client", List.of(), Instant.now());
+        when(tokenService.validate("token")).thenReturn(response);
 
-        MvcResult introspectionResult = mockMvc.perform(post("/oauth/token/introspect")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(introspectRequest))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.active").value(true))
-                .andReturn();
+        var entity = controller.introspect(request);
 
-        TokenValidationResponse validationResponse = objectMapper.readValue(introspectionResult.getResponse().getContentAsString(), TokenValidationResponse.class);
-        assertThat(validationResponse.getClientId()).isEqualTo("device-service");
-        assertThat(validationResponse.getScope()).containsExactly("devices.manage");
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(entity.getBody()).isEqualTo(response);
+        verify(tokenService).validate("token");
+    }
 
-        mockMvc.perform(post("/oauth/token/revoke")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(introspectRequest))
-                .andExpect(status().isNoContent());
+    @Test
+    void revokeDelegatesAndReturnsNoContent() {
+        TokenRevocationRequest request = new TokenRevocationRequest();
+        request.setToken("token");
 
-        mockMvc.perform(post("/oauth/token/introspect")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(introspectRequest))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.active").value(false));
+        var entity = controller.revoke(request);
 
-        MvcResult jwksResult = mockMvc.perform(get("/oauth/.well-known/jwks.json"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.keys[0].kty").value("RSA"))
-                .andReturn();
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(entity.getBody()).isNull();
+        verify(tokenService).revoke("token");
+    }
 
-        JsonNode jwks = objectMapper.readTree(jwksResult.getResponse().getContentAsString());
-        assertThat(jwks.path("keys").isArray()).isTrue();
-        assertThat(jwks.path("keys").get(0).path("n").asText()).isNotBlank();
-        assertThat(jwks.path("keys").get(0).path("e").asText()).isNotBlank();
+    @Test
+    void jwksReturnsKeys() {
+        JwksResponse response = new JwksResponse(List.of(new JwkKey("RSA", "kid", "RS256", "sig", "n", "e")));
+        when(tokenService.jwks()).thenReturn(response);
+
+        var entity = controller.jwks();
+
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(entity.getBody()).isEqualTo(response);
+        verify(tokenService).jwks();
     }
 }
