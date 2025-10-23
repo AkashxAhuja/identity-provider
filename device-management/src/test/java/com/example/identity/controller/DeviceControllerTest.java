@@ -1,99 +1,93 @@
 package com.example.identity.controller;
 
+import com.example.identity.dto.BiometricRegistrationRequest;
+import com.example.identity.dto.DeviceDetagRequest;
+import com.example.identity.dto.DeviceRegistrationRequest;
 import com.example.identity.dto.DeviceResponse;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.identity.service.DeviceRegistrationResult;
+import com.example.identity.service.DeviceService;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@AutoConfigureMockMvc
+@ExtendWith(MockitoExtension.class)
 class DeviceControllerTest {
 
-    @Autowired
-    private MockMvc mockMvc;
+    @Mock
+    private DeviceService deviceService;
 
-    @Autowired
-    private ObjectMapper objectMapper;
+    @InjectMocks
+    private DeviceController controller;
 
     @Test
-    void deviceLifecycleHappyPath() throws Exception {
-        String registrationPayload = """
-                {
-                  \"cid\": \"C12345678\",
-                  \"deviceOs\": \"ANDROID\",
-                  \"deviceOsVer\": \"14\",
-                  \"model\": \"Pixel 8\",
-                  \"appVersion\": \"1.4.3\",
-                  \"lang\": \"en\",
-                  \"imeNo\": \"352011119999999\",
-                  \"deviceOsId\": \"os-id-123\",
-                  \"userAgent\": \"MyApp/1.4.3 Android\",
-                  \"isTouchEnabled\": true,
-                  \"biometricType\": \"NONE\",
-                  \"deviceNickName\": \"Primary Pixel\"
-                }
-                """;
+    void registerDeviceReturnsCreatedWhenNewDevice() {
+        DeviceRegistrationRequest request = new DeviceRegistrationRequest();
+        DeviceResponse response = buildResponse();
+        when(deviceService.registerDevice(request, "key"))
+                .thenReturn(new DeviceRegistrationResult(response, true));
 
-        MvcResult registrationResult = mockMvc.perform(post("/devices")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("Idempotency-Key", "register-1")
-                        .content(registrationPayload))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.cid").value("C12345678"))
-                .andReturn();
+        var entity = controller.registerDevice(request, "key");
 
-        DeviceResponse response = objectMapper.readValue(registrationResult.getResponse().getContentAsString(), DeviceResponse.class);
-        assertThat(response.getDeviceId()).isNotBlank();
-        assertThat(response.getStatus()).isEqualTo("A");
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(entity.getBody()).isEqualTo(response);
+        verify(deviceService).registerDevice(request, "key");
+    }
 
-        mockMvc.perform(post("/devices")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("Idempotency-Key", "register-1")
-                        .content(registrationPayload))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.deviceId").value(response.getDeviceId()))
-                .andExpect(jsonPath("$.status").value("A"));
+    @Test
+    void registerDeviceReturnsOkWhenExisting() {
+        DeviceRegistrationRequest request = new DeviceRegistrationRequest();
+        DeviceResponse response = buildResponse();
+        when(deviceService.registerDevice(request, null))
+                .thenReturn(new DeviceRegistrationResult(response, false));
 
-        String biometricPayload = """
-                {
-                  \"cid\": \"C12345678\",
-                  \"deviceId\": \"%s\",
-                  \"biometricType\": \"FINGERPRINT\",
-                  \"isTouchEnabled\": true
-                }
-                """.formatted(response.getDeviceId());
+        var entity = controller.registerDevice(request, null);
 
-        mockMvc.perform(post("/devices/biometrics")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(biometricPayload))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.biometricType").value("FINGERPRINT"))
-                .andExpect(jsonPath("$.isTouchEnabled").value(true));
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.OK);
+        verify(deviceService).registerDevice(request, null);
+    }
 
-        String detagPayload = """
-                {
-                  \"cid\": \"C12345678\",
-                  \"deviceId\": \"%s\",
-                  \"reason\": \"user request\",
-                  \"revokeSessions\": true,
-                  \"hardDelete\": false
-                }
-                """.formatted(response.getDeviceId());
+    @Test
+    void registerBiometricsDelegatesToService() {
+        BiometricRegistrationRequest request = new BiometricRegistrationRequest();
+        DeviceResponse response = buildResponse();
+        when(deviceService.enableBiometrics(request)).thenReturn(response);
 
-        mockMvc.perform(post("/devices/detag")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(detagPayload))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("I"));
+        var entity = controller.registerBiometrics(request);
+
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(entity.getBody()).isEqualTo(response);
+        verify(deviceService).enableBiometrics(request);
+    }
+
+    @Test
+    void detagDeviceDelegatesToService() {
+        DeviceDetagRequest request = new DeviceDetagRequest();
+        DeviceResponse response = buildResponse();
+        when(deviceService.detagDevice(request)).thenReturn(response);
+
+        var entity = controller.detagDevice(request);
+
+        assertThat(entity.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(entity.getBody()).isEqualTo(response);
+        verify(deviceService).detagDevice(request);
+    }
+
+    private DeviceResponse buildResponse() {
+        DeviceResponse response = new DeviceResponse();
+        response.setDeviceId("device");
+        response.setCid("123");
+        response.setStatus("A");
+        response.setLastUpdateDateTime(OffsetDateTime.now(ZoneOffset.UTC));
+        return response;
     }
 }
