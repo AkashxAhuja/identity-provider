@@ -14,7 +14,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.ReflectiveOperationException;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -22,6 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TokenServiceTest {
+
+    private static final String CLIENT_ID = "device-service";
+    private static final String CLIENT_SECRET = "super-secret";
 
     private TokenService tokenService;
 
@@ -35,10 +37,10 @@ class TokenServiceTest {
     void generateTokenReturnsSignedResponseForValidClient() {
         TokenRequest request = buildRequest();
 
-        TokenResponse response = tokenService.generateToken(request);
+        TokenResponse response = tokenService.generateToken(request, CLIENT_ID, CLIENT_SECRET);
 
         assertThat(response.getTokenType()).isEqualTo("Bearer");
-        assertThat(response.getExpiresIn()).isEqualTo(request.getExpiresIn());
+        assertThat(response.getExpiresIn()).isEqualTo(3600L);
         assertThat(response.getScope()).containsExactlyInAnyOrderElementsOf(request.getScopes());
         assertThat(tokenService.validate(response.getAccessToken()).isActive()).isTrue();
     }
@@ -48,7 +50,7 @@ class TokenServiceTest {
         TokenRequest request = buildRequest();
         request.setGrantType("password");
 
-        assertThatThrownBy(() -> tokenService.generateToken(request))
+        assertThatThrownBy(() -> tokenService.generateToken(request, CLIENT_ID, CLIENT_SECRET))
                 .isInstanceOf(InvalidClientException.class)
                 .hasMessageContaining("Unsupported grant type");
     }
@@ -56,9 +58,8 @@ class TokenServiceTest {
     @Test
     void generateTokenRejectsUnknownClient() {
         TokenRequest request = buildRequest();
-        request.setClientId("unknown");
 
-        assertThatThrownBy(() -> tokenService.generateToken(request))
+        assertThatThrownBy(() -> tokenService.generateToken(request, "unknown", CLIENT_SECRET))
                 .isInstanceOf(InvalidClientException.class)
                 .hasMessageContaining("Invalid client credentials");
     }
@@ -66,9 +67,8 @@ class TokenServiceTest {
     @Test
     void generateTokenRejectsInvalidSecret() {
         TokenRequest request = buildRequest();
-        request.setClientSecret("wrong");
 
-        assertThatThrownBy(() -> tokenService.generateToken(request))
+        assertThatThrownBy(() -> tokenService.generateToken(request, CLIENT_ID, "wrong"))
                 .isInstanceOf(InvalidClientException.class)
                 .hasMessageContaining("Invalid client credentials");
     }
@@ -76,27 +76,30 @@ class TokenServiceTest {
     @Test
     void generateTokenValidatesRequestedScopes() {
         TokenRequest request = buildRequest();
-        request.setScopes(List.of("devices.read", "unknown.scope"));
+        request.setScope("devices.read unknown.scope");
 
-        assertThatThrownBy(() -> tokenService.generateToken(request))
+        assertThatThrownBy(() -> tokenService.generateToken(request, CLIENT_ID, CLIENT_SECRET))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Requested scopes");
     }
 
     @Test
-    void generateTokenRequiresPositiveExpiry() {
+    void generateTokenRequiresClientAuthentication() {
         TokenRequest request = buildRequest();
-        request.setExpiresIn(0L);
 
-        assertThatThrownBy(() -> tokenService.generateToken(request))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("expiresIn");
+        assertThatThrownBy(() -> tokenService.generateToken(request, null, CLIENT_SECRET))
+                .isInstanceOf(InvalidClientException.class)
+                .hasMessageContaining("Client authentication required");
+
+        assertThatThrownBy(() -> tokenService.generateToken(request, CLIENT_ID, ""))
+                .isInstanceOf(InvalidClientException.class)
+                .hasMessageContaining("Client authentication required");
     }
 
     @Test
     void validateReturnsInactiveForUnknownTokenWithValidSignature() throws Exception {
         TokenRequest request = buildRequest();
-        TokenResponse issued = tokenService.generateToken(request);
+        TokenResponse issued = tokenService.generateToken(request, CLIENT_ID, CLIENT_SECRET);
 
         Map<String, ?> issuedTokens = getIssuedTokens();
         issuedTokens.remove(issued.getAccessToken());
@@ -116,7 +119,7 @@ class TokenServiceTest {
 
     @Test
     void validateRejectsTamperedSignature() {
-        TokenResponse issued = tokenService.generateToken(buildRequest());
+        TokenResponse issued = tokenService.generateToken(buildRequest(), CLIENT_ID, CLIENT_SECRET);
         String[] segments = issued.getAccessToken().split("\\.");
         String tamperedPayload = segments[1].substring(0, segments[1].length() - 2) + "ab";
         String tampered = segments[0] + "." + tamperedPayload + "." + segments[2];
@@ -128,7 +131,7 @@ class TokenServiceTest {
 
     @Test
     void validateRejectsUnknownSigningKey() {
-        TokenResponse issued = tokenService.generateToken(buildRequest());
+        TokenResponse issued = tokenService.generateToken(buildRequest(), CLIENT_ID, CLIENT_SECRET);
         try {
             Field keyIdField = TokenService.class.getDeclaredField("keyId");
             keyIdField.setAccessible(true);
@@ -144,7 +147,7 @@ class TokenServiceTest {
 
     @Test
     void validateRejectsExpiredTokens() throws Exception {
-        TokenResponse issued = tokenService.generateToken(buildRequest());
+        TokenResponse issued = tokenService.generateToken(buildRequest(), CLIENT_ID, CLIENT_SECRET);
         Map<String, Object> issuedTokens = getIssuedTokens();
         Object metadata = issuedTokens.get(issued.getAccessToken());
         Class<?> metadataClass = Class.forName("com.example.accesstoken.service.TokenService$TokenMetadata");
@@ -162,7 +165,7 @@ class TokenServiceTest {
 
     @Test
     void validateRejectsRevokedTokens() {
-        TokenResponse issued = tokenService.generateToken(buildRequest());
+        TokenResponse issued = tokenService.generateToken(buildRequest(), CLIENT_ID, CLIENT_SECRET);
         tokenService.revoke(issued.getAccessToken());
 
         TokenValidationResponse response = tokenService.validate(issued.getAccessToken());
@@ -172,7 +175,7 @@ class TokenServiceTest {
 
     @Test
     void revokeThrowsWhenTokenNotIssued() {
-        TokenResponse issued = tokenService.generateToken(buildRequest());
+        TokenResponse issued = tokenService.generateToken(buildRequest(), CLIENT_ID, CLIENT_SECRET);
         getIssuedTokens().remove(issued.getAccessToken());
 
         assertThatThrownBy(() -> tokenService.revoke(issued.getAccessToken()))
@@ -214,12 +217,8 @@ class TokenServiceTest {
     private TokenRequest buildRequest() {
         TokenRequest request = new TokenRequest();
         request.setGrantType("client_credentials");
-        request.setClientId("device-service");
-        request.setClientSecret("super-secret");
-        request.setSubject("user-123");
-        request.setScopes(List.of("devices.read", "devices.write"));
-        request.setAudience("device-management");
-        request.setExpiresIn(60L);
+        request.setScope("devices.read devices.write");
+        request.setResource("device-management");
         return request;
     }
 }

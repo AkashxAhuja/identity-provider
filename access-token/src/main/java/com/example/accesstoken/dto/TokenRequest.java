@@ -1,33 +1,22 @@
 package com.example.accesstoken.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
-import jakarta.validation.constraints.NotNull;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class TokenRequest {
 
     @NotBlank
     private String grantType;
 
-    @NotBlank
-    private String clientId;
+    private String scope;
 
-    @NotBlank
-    private String clientSecret;
+    private String resource;
 
-    @NotBlank
-    private String subject;
-
-    @NotEmpty
-    private List<@NotBlank String> scopes;
-
-    @NotBlank
     private String audience;
-
-    @NotNull
-    private Long expiresIn;
 
     public String getGrantType() {
         return grantType;
@@ -37,36 +26,20 @@ public class TokenRequest {
         this.grantType = grantType;
     }
 
-    public String getClientId() {
-        return clientId;
+    public String getScope() {
+        return scope;
     }
 
-    public void setClientId(String clientId) {
-        this.clientId = clientId;
+    public void setScope(String scope) {
+        this.scope = scope;
     }
 
-    public String getClientSecret() {
-        return clientSecret;
+    public String getResource() {
+        return resource;
     }
 
-    public void setClientSecret(String clientSecret) {
-        this.clientSecret = clientSecret;
-    }
-
-    public String getSubject() {
-        return subject;
-    }
-
-    public void setSubject(String subject) {
-        this.subject = subject;
-    }
-
-    public List<String> getScopes() {
-        return scopes;
-    }
-
-    public void setScopes(List<String> scopes) {
-        this.scopes = scopes;
+    public void setResource(String resource) {
+        this.resource = resource;
     }
 
     public String getAudience() {
@@ -77,11 +50,14 @@ public class TokenRequest {
         this.audience = audience;
     }
 
-    public Long getExpiresIn() {
-        return expiresIn;
-    }
-
-    public void setExpiresIn(Long expiresIn) {
-        this.expiresIn = expiresIn;
+    public List<String> getScopes() {
+        if (scope == null || scope.isBlank()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(scope.split("\\s+"))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
     }
 }
