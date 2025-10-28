@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TokenService {
 
     private static final String SUPPORTED_GRANT_TYPE = "client_credentials";
+    private static final long DEFAULT_TOKEN_TTL_SECONDS = 3600L;
     private static final Base64.Encoder BASE64_URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder BASE64_URL_DECODER = Base64.getUrlDecoder();
 
@@ -62,13 +64,17 @@ public class TokenService {
         registerClient("identity-admin", "change-me", Set.of("tokens.read", "tokens.write"));
     }
 
-    public TokenResponse generateToken(TokenRequest request) {
+    public TokenResponse generateToken(TokenRequest request, String clientId, String clientSecret) {
         if (!SUPPORTED_GRANT_TYPE.equals(request.getGrantType())) {
             throw new InvalidClientException("Unsupported grant type: " + request.getGrantType());
         }
 
-        RegisteredClient client = registeredClients.get(request.getClientId());
-        if (client == null || !client.matchesSecret(request.getClientSecret())) {
+        if (clientId == null || clientId.isBlank() || clientSecret == null || clientSecret.isBlank()) {
+            throw new InvalidClientException("Client authentication required");
+        }
+
+        RegisteredClient client = registeredClients.get(clientId);
+        if (client == null || !client.matchesSecret(clientSecret)) {
             throw new InvalidClientException("Invalid client credentials");
         }
 
@@ -77,31 +83,31 @@ public class TokenService {
             throw new IllegalArgumentException("Requested scopes exceed client permissions");
         }
 
-        if (request.getExpiresIn() <= 0) {
-            throw new IllegalArgumentException("expiresIn must be greater than zero");
-        }
-
         Instant issuedAt = Instant.now();
-        Instant expiresAt = issuedAt.plusSeconds(request.getExpiresIn());
+        Instant expiresAt = issuedAt.plusSeconds(DEFAULT_TOKEN_TTL_SECONDS);
         String scope = String.join(" ", requestedScopes);
         String jti = UUID.randomUUID().toString();
+        String subject = client.clientId();
+        Optional<String> audience = resolveAudience(request);
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("iss", "com.example.access-token");
-        payload.put("sub", request.getSubject());
-        payload.put("aud", request.getAudience());
+        payload.put("sub", subject);
+        audience.ifPresent(value -> payload.put("aud", value));
         payload.put("exp", expiresAt.getEpochSecond());
         payload.put("iat", issuedAt.getEpochSecond());
         payload.put("client_id", client.clientId());
-        payload.put("scope", scope);
+        if (!scope.isBlank()) {
+            payload.put("scope", scope);
+        }
         payload.put("jti", jti);
 
         String token = sign(payload);
-        TokenMetadata metadata = new TokenMetadata(client.clientId(), request.getSubject(), requestedScopes, expiresAt);
+        TokenMetadata metadata = new TokenMetadata(client.clientId(), subject, requestedScopes, expiresAt);
         issuedTokens.put(token, metadata);
         revokedTokens.remove(token);
 
-        return new TokenResponse(token, "Bearer", request.getExpiresIn(), issuedAt, List.copyOf(requestedScopes));
+        return new TokenResponse(token, "Bearer", DEFAULT_TOKEN_TTL_SECONDS, issuedAt, List.copyOf(requestedScopes));
     }
 
     public TokenValidationResponse validate(String token) {
@@ -196,6 +202,16 @@ public class TokenService {
 
     private void registerClient(String clientId, String clientSecret, Set<String> scopes) {
         registeredClients.put(clientId, new RegisteredClient(clientId, hashSecret(clientSecret), scopes));
+    }
+
+    private Optional<String> resolveAudience(TokenRequest request) {
+        if (request.getResource() != null && !request.getResource().isBlank()) {
+            return Optional.of(request.getResource());
+        }
+        if (request.getAudience() != null && !request.getAudience().isBlank()) {
+            return Optional.of(request.getAudience());
+        }
+        return Optional.empty();
     }
 
     private String hashSecret(String secret) {
