@@ -1,5 +1,18 @@
 spring:
   application:
     name: access-token-service
+  datasource:
+    url: jdbc:h2:mem:accesstoken;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driverClassName: org.h2.Driver
+    username: sa
+    password: password
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    defer-datasource-initialization: true
+  sql:
+    init:
+      mode: always
 server:
   port: 8081

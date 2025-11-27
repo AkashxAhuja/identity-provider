@@ -1,0 +1,72 @@
+{
+  "info": {
+    "name": "Access Token & Application Registry",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "OAuth Token (client_credentials)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic {{clientCredentials}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "url": {
+          "raw": "http://localhost:8081/oauth/token",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["oauth", "token"]
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {"key": "grant_type", "value": "client_credentials"},
+            {"key": "scope", "value": "tokens.read tokens.write"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Application Registry - Basic",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Authorization", "value": "Basic {{mibCredentials}}"}
+        ],
+        "url": {
+          "raw": "http://localhost:8081/applications/authenticate?scope=devices.read",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["applications", "authenticate"],
+          "query": [{"key": "scope", "value": "devices.read"}]
+        }
+      }
+    },
+    {
+      "name": "Application Registry - Partner Token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Authorization", "value": "Bearer partner-token-123"}
+        ],
+        "url": {
+          "raw": "http://localhost:8081/applications/authenticate?scope=partners.read",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["applications", "authenticate"],
+          "query": [{"key": "scope", "value": "partners.read"}]
+        }
+      }
+    }
+  ]
+}

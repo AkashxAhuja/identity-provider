@@ -29,7 +29,7 @@ class TokenServiceTest {
 
     @BeforeEach
     void setUp() {
-        tokenService = new TokenService(new ObjectMapper());
+        tokenService = new TokenService(new ObjectMapper(), new HashingService());
         tokenService.initialize();
     }
 
