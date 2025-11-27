@@ -7,6 +7,7 @@ import com.example.accesstoken.dto.TokenResponse;
 import com.example.accesstoken.dto.TokenValidationResponse;
 import com.example.accesstoken.exception.InvalidClientException;
 import com.example.accesstoken.exception.InvalidTokenException;
+import com.example.accesstoken.model.ApplicationClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Service;
@@ -41,12 +42,15 @@ public class TokenService {
     private KeyPair keyPair;
     private String keyId;
 
+    private final HashingService hashingService;
+
     private final Map<String, RegisteredClient> registeredClients = new ConcurrentHashMap<>();
     private final Map<String, TokenMetadata> issuedTokens = new ConcurrentHashMap<>();
     private final Set<String> revokedTokens = ConcurrentHashMap.newKeySet();
 
-    public TokenService(ObjectMapper objectMapper) {
+    public TokenService(ObjectMapper objectMapper, HashingService hashingService) {
         this.objectMapper = objectMapper;
+        this.hashingService = hashingService;
     }
 
     @PostConstruct
@@ -74,7 +78,7 @@ public class TokenService {
         }
 
         RegisteredClient client = registeredClients.get(clientId);
-        if (client == null || !client.matchesSecret(clientSecret)) {
+        if (client == null || !client.matchesSecret(clientSecret, hashingService)) {
             throw new InvalidClientException("Invalid client credentials");
         }
 
@@ -83,31 +87,34 @@ public class TokenService {
             throw new IllegalArgumentException("Requested scopes exceed client permissions");
         }
 
-        Instant issuedAt = Instant.now();
-        Instant expiresAt = issuedAt.plusSeconds(DEFAULT_TOKEN_TTL_SECONDS);
-        String scope = String.join(" ", requestedScopes);
-        String jti = UUID.randomUUID().toString();
-        String subject = client.clientId();
         Optional<String> audience = resolveAudience(request);
+        return issueToken(client.clientId(), client.clientId(), requestedScopes, audience);
+    }
 
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("iss", "com.example.access-token");
-        payload.put("sub", subject);
-        audience.ifPresent(value -> payload.put("aud", value));
-        payload.put("exp", expiresAt.getEpochSecond());
-        payload.put("iat", issuedAt.getEpochSecond());
-        payload.put("client_id", client.clientId());
-        if (!scope.isBlank()) {
-            payload.put("scope", scope);
+    public TokenResponse generateTokenForApplicationClient(ApplicationClient client, TokenRequest request) {
+        if (client == null) {
+            throw new InvalidClientException("Client authentication required");
         }
-        payload.put("jti", jti);
 
-        String token = sign(payload);
-        TokenMetadata metadata = new TokenMetadata(client.clientId(), subject, requestedScopes, expiresAt);
-        issuedTokens.put(token, metadata);
-        revokedTokens.remove(token);
+        Set<String> requestedScopes = Set.copyOf(request.getScopes());
+        Set<String> allowedScopes = client.getAllowedScopeSet();
+        if (!allowedScopes.isEmpty() && !allowedScopes.containsAll(requestedScopes)) {
+            throw new IllegalArgumentException("Requested scopes exceed client permissions");
+        }
 
-        return new TokenResponse(token, "Bearer", DEFAULT_TOKEN_TTL_SECONDS, issuedAt, List.copyOf(requestedScopes));
+        Set<String> scopesToUse = requestedScopes.isEmpty() && !allowedScopes.isEmpty()
+                ? allowedScopes
+                : requestedScopes;
+
+        String subject = client.getClientId();
+        if (subject == null || subject.isBlank()) {
+            subject = "application-client-" + client.getId();
+        }
+        String clientId = client.getClientId() == null || client.getClientId().isBlank()
+                ? subject
+                : client.getClientId();
+        Optional<String> audience = resolveAudience(request);
+        return issueToken(clientId, subject, scopesToUse, audience);
     }
 
     public TokenValidationResponse validate(String token) {
@@ -128,6 +135,32 @@ public class TokenService {
         }
 
         return new TokenValidationResponse(true, metadata.subject(), metadata.clientId(), List.copyOf(metadata.scopes()), metadata.expiresAt());
+    }
+
+    private TokenResponse issueToken(String clientId, String subject, Set<String> requestedScopes, Optional<String> audience) {
+        Instant issuedAt = Instant.now();
+        Instant expiresAt = issuedAt.plusSeconds(DEFAULT_TOKEN_TTL_SECONDS);
+        String scope = String.join(" ", requestedScopes);
+        String jti = UUID.randomUUID().toString();
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("iss", "com.example.access-token");
+        payload.put("sub", subject);
+        audience.ifPresent(value -> payload.put("aud", value));
+        payload.put("exp", expiresAt.getEpochSecond());
+        payload.put("iat", issuedAt.getEpochSecond());
+        payload.put("client_id", clientId);
+        if (!scope.isBlank()) {
+            payload.put("scope", scope);
+        }
+        payload.put("jti", jti);
+
+        String token = sign(payload);
+        TokenMetadata metadata = new TokenMetadata(clientId, subject, requestedScopes, expiresAt);
+        issuedTokens.put(token, metadata);
+        revokedTokens.remove(token);
+
+        return new TokenResponse(token, "Bearer", DEFAULT_TOKEN_TTL_SECONDS, issuedAt, List.copyOf(requestedScopes));
     }
 
     public void revoke(String token) {
@@ -201,7 +234,7 @@ public class TokenService {
     }
 
     private void registerClient(String clientId, String clientSecret, Set<String> scopes) {
-        registeredClients.put(clientId, new RegisteredClient(clientId, hashSecret(clientSecret), scopes));
+        registeredClients.put(clientId, new RegisteredClient(clientId, hashingService.hashToBase64(clientSecret), scopes));
     }
 
     private Optional<String> resolveAudience(TokenRequest request) {
@@ -212,16 +245,6 @@ public class TokenService {
             return Optional.of(request.getAudience());
         }
         return Optional.empty();
-    }
-
-    private String hashSecret(String secret) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hashed = digest.digest(secret.getBytes(StandardCharsets.UTF_8));
-            return Base64.getEncoder().encodeToString(hashed);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("Unable to hash client secret", e);
-        }
     }
 
     private String generateKeyId(RSAPublicKey publicKey) {
@@ -245,18 +268,8 @@ public class TokenService {
     }
 
     private record RegisteredClient(String clientId, String hashedSecret, Set<String> allowedScopes) {
-        boolean matchesSecret(String rawSecret) {
-            return hashedSecret.equals(hash(rawSecret));
-        }
-
-        private String hash(String rawSecret) {
-            try {
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                byte[] hashed = digest.digest(rawSecret.getBytes(StandardCharsets.UTF_8));
-                return Base64.getEncoder().encodeToString(hashed);
-            } catch (NoSuchAlgorithmException e) {
-                throw new IllegalStateException("Unable to hash client secret", e);
-            }
+        boolean matchesSecret(String rawSecret, HashingService hashingService) {
+            return hashedSecret.equals(hashingService.hashToBase64(rawSecret));
         }
     }
 

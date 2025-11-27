@@ -24,7 +24,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(InvalidClientException.class)
     public ResponseEntity<Map<String, Object>> handleInvalidClient(InvalidClientException ex) {
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error("invalid_client", ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header("WWW-Authenticate", "Basic realm=\"ApplicationRegistry\"")
+                .body(error("invalid_client", ex.getMessage()));
     }
 
     @ExceptionHandler(InvalidTokenException.class)
