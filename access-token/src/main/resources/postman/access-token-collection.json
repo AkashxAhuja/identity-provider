@@ -1,0 +1,143 @@
+{
+  "info": {
+    "name": "Access Token & Application Registry",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8081" },
+    { "key": "oauthClientCredentials", "value": "ZGV2aWNlLXNlcnZpY2U6c3VwZXItc2VjcmV0" },
+    { "key": "mibCredentials", "value": "bWliLXNlcnZpY2U6bWliLXNlY3JldA==" },
+    { "key": "partnerToken", "value": "partner-token-123" },
+    { "key": "accessToken", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "OAuth Token (client_credentials)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic {{oauthClientCredentials}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/oauth/token",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["oauth", "token"]
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {"key": "grant_type", "value": "client_credentials"},
+            {"key": "scope", "value": "devices.read devices.write"}
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.access_token) { pm.collectionVariables.set('accessToken', json.access_token); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Application Registry - Basic",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Authorization", "value": "Basic {{mibCredentials}}"}
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/applications/authenticate?scope=devices.read",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["applications", "authenticate"],
+          "query": [{"key": "scope", "value": "devices.read"}]
+        }
+      }
+    },
+    {
+      "name": "Application Registry - Partner Token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Authorization", "value": "Bearer {{partnerToken}}"}
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/applications/authenticate?scope=partners.read",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["applications", "authenticate"],
+          "query": [{"key": "scope", "value": "partners.read"}]
+        }
+      }
+    },
+    {
+      "name": "Token Introspect",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{accessToken}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/oauth/token/introspect",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["oauth", "token", "introspect"]
+        }
+      }
+    },
+    {
+      "name": "Token Revoke",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{accessToken}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/oauth/token/revoke",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["oauth", "token", "revoke"]
+        }
+      }
+    },
+    {
+      "name": "JWKS",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/oauth/.well-known/jwks.json",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8081",
+          "path": ["oauth", ".well-known", "jwks.json"]
+        }
+      }
+    }
+  ]
+}
