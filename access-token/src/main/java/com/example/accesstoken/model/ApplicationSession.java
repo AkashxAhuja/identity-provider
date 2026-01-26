@@ -2,8 +2,6 @@ package com.example.accesstoken.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -18,31 +16,36 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 @Entity
-@Table(name = "app_client")
-public class ApplicationClient {
+@Table(name = "app_session")
+public class ApplicationSession {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "client_id", unique = true)
+    @Column(name = "token", length = 4096, nullable = false, unique = true)
+    private String token;
+
+    @Column(name = "client_id")
     private String clientId;
 
-    @Column(name = "client_secret")
-    private String clientSecret;
+    @Column(name = "subject")
+    private String subject;
 
-    @Column(name = "client_desc")
-    private String clientDesc;
+    @Column(name = "scope")
+    private String scope;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "auth_mode", nullable = false)
-    private AuthMode authMode;
+    @Column(name = "issued_at", nullable = false)
+    private Instant issuedAt;
+
+    @Column(name = "expires_at", nullable = false)
+    private Instant expiresAt;
+
+    @Column(name = "jti", unique = true)
+    private String jti;
 
     @Column(name = "active")
     private boolean active = true;
-
-    @Column(name = "allowed_scope")
-    private String allowedScope;
 
     @Column(name = "created_at")
     private Instant createdAt;
@@ -62,13 +65,13 @@ public class ApplicationClient {
         updatedAt = Instant.now();
     }
 
-    public Set<String> getAllowedScopeSet() {
-        if (allowedScope == null || allowedScope.isBlank()) {
+    public Set<String> getScopeSet() {
+        if (scope == null || scope.isBlank()) {
             return Collections.emptySet();
         }
-        return new LinkedHashSet<>(Arrays.stream(allowedScope.split("\\s+"))
+        return new LinkedHashSet<>(Arrays.stream(scope.split("\\s+"))
                 .map(String::trim)
-                .filter(s -> !s.isEmpty())
+                .filter(value -> !value.isEmpty())
                 .toList());
     }
 
@@ -80,6 +83,14 @@ public class ApplicationClient {
         this.id = id;
     }
 
+    public String getToken() {
+        return token;
+    }
+
+    public void setToken(String token) {
+        this.token = token;
+    }
+
     public String getClientId() {
         return clientId;
     }
@@ -88,28 +99,44 @@ public class ApplicationClient {
         this.clientId = clientId;
     }
 
-    public String getClientSecret() {
-        return clientSecret;
+    public String getSubject() {
+        return subject;
     }
 
-    public void setClientSecret(String clientSecret) {
-        this.clientSecret = clientSecret;
+    public void setSubject(String subject) {
+        this.subject = subject;
     }
 
-    public String getClientDesc() {
-        return clientDesc;
+    public String getScope() {
+        return scope;
     }
 
-    public void setClientDesc(String clientDesc) {
-        this.clientDesc = clientDesc;
+    public void setScope(String scope) {
+        this.scope = scope;
     }
 
-    public AuthMode getAuthMode() {
-        return authMode;
+    public Instant getIssuedAt() {
+        return issuedAt;
     }
 
-    public void setAuthMode(AuthMode authMode) {
-        this.authMode = authMode;
+    public void setIssuedAt(Instant issuedAt) {
+        this.issuedAt = issuedAt;
+    }
+
+    public Instant getExpiresAt() {
+        return expiresAt;
+    }
+
+    public void setExpiresAt(Instant expiresAt) {
+        this.expiresAt = expiresAt;
+    }
+
+    public String getJti() {
+        return jti;
+    }
+
+    public void setJti(String jti) {
+        this.jti = jti;
     }
 
     public boolean isActive() {
@@ -134,13 +161,5 @@ public class ApplicationClient {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
-    }
-
-    public String getAllowedScope() {
-        return allowedScope;
-    }
-
-    public void setAllowedScope(String allowedScope) {
-        this.allowedScope = allowedScope;
     }
 }

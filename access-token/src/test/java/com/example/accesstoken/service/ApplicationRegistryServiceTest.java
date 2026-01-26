@@ -41,7 +41,7 @@ class ApplicationRegistryServiceTest {
         ApplicationClient client = registryService.authenticateFromAuthorizationHeader("Bearer partner-token-123");
 
         assertThat(client.getAuthMode()).isNotNull();
-        assertThat(client.getStaticTokenHash()).isNotBlank();
+        assertThat(client.getClientSecret()).isNotBlank();
     }
 
     @Test

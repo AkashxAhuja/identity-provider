@@ -8,27 +8,34 @@ import com.example.accesstoken.dto.TokenValidationResponse;
 import com.example.accesstoken.exception.InvalidClientException;
 import com.example.accesstoken.exception.InvalidTokenException;
 import com.example.accesstoken.model.ApplicationClient;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
+import com.example.accesstoken.model.ApplicationSession;
+import com.example.accesstoken.model.AuthMode;
+import com.example.accesstoken.repository.ApplicationClientRepository;
+import com.example.accesstoken.repository.ApplicationSessionRepository;
+import com.nimbusds.jose.EncryptionMethod;
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JOSEObjectType;
+import com.nimbusds.jose.JWEAlgorithm;
+import com.nimbusds.jose.JWEHeader;
+import com.nimbusds.jose.JWEObject;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.Payload;
+import com.nimbusds.jose.crypto.RSADecrypter;
+import com.nimbusds.jose.crypto.RSAEncrypter;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.crypto.RSASSAVerifier;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.Signature;
 import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TokenService {
@@ -36,36 +43,20 @@ public class TokenService {
     private static final String SUPPORTED_GRANT_TYPE = "client_credentials";
     private static final long DEFAULT_TOKEN_TTL_SECONDS = 3600L;
     private static final Base64.Encoder BASE64_URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
-    private static final Base64.Decoder BASE64_URL_DECODER = Base64.getUrlDecoder();
-
-    private final ObjectMapper objectMapper;
-    private KeyPair keyPair;
-    private String keyId;
 
     private final HashingService hashingService;
+    private final ApplicationClientRepository clientRepository;
+    private final ApplicationSessionRepository sessionRepository;
+    private final JwtKeyProvider keyProvider;
 
-    private final Map<String, RegisteredClient> registeredClients = new ConcurrentHashMap<>();
-    private final Map<String, TokenMetadata> issuedTokens = new ConcurrentHashMap<>();
-    private final Set<String> revokedTokens = ConcurrentHashMap.newKeySet();
-
-    public TokenService(ObjectMapper objectMapper, HashingService hashingService) {
-        this.objectMapper = objectMapper;
+    public TokenService(HashingService hashingService,
+                        ApplicationClientRepository clientRepository,
+                        ApplicationSessionRepository sessionRepository,
+                        JwtKeyProvider keyProvider) {
         this.hashingService = hashingService;
-    }
-
-    @PostConstruct
-    void initialize() {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            this.keyPair = generator.generateKeyPair();
-            this.keyId = generateKeyId((RSAPublicKey) keyPair.getPublic());
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("Unable to initialize RSA key pair", e);
-        }
-
-        registerClient("device-service", "super-secret", Set.of("devices.read", "devices.write", "devices.manage"));
-        registerClient("identity-admin", "change-me", Set.of("tokens.read", "tokens.write"));
+        this.clientRepository = clientRepository;
+        this.sessionRepository = sessionRepository;
+        this.keyProvider = keyProvider;
     }
 
     public TokenResponse generateToken(TokenRequest request, String clientId, String clientSecret) {
@@ -77,18 +68,25 @@ public class TokenService {
             throw new InvalidClientException("Client authentication required");
         }
 
-        RegisteredClient client = registeredClients.get(clientId);
-        if (client == null || !client.matchesSecret(clientSecret, hashingService)) {
+        ApplicationClient client = clientRepository.findByClientIdAndAuthModeAndActiveTrue(clientId, AuthMode.BASIC)
+                .orElseThrow(() -> new InvalidClientException("Invalid client credentials"));
+
+        if (!hashingService.hashToBase64(clientSecret).equals(client.getClientSecret())) {
             throw new InvalidClientException("Invalid client credentials");
         }
 
         Set<String> requestedScopes = Set.copyOf(request.getScopes());
-        if (!client.allowedScopes().containsAll(requestedScopes)) {
+        Set<String> allowedScopes = client.getAllowedScopeSet();
+        if (!allowedScopes.isEmpty() && !allowedScopes.containsAll(requestedScopes)) {
             throw new IllegalArgumentException("Requested scopes exceed client permissions");
         }
 
         Optional<String> audience = resolveAudience(request);
-        return issueToken(client.clientId(), client.clientId(), requestedScopes, audience);
+        Set<String> scopesToUse = requestedScopes.isEmpty() && !allowedScopes.isEmpty()
+                ? allowedScopes
+                : requestedScopes;
+
+        return issueToken(client.getClientId(), client.getClientId(), scopesToUse, audience);
     }
 
     public TokenResponse generateTokenForApplicationClient(ApplicationClient client, TokenRequest request) {
@@ -118,23 +116,19 @@ public class TokenService {
     }
 
     public TokenValidationResponse validate(String token) {
-        TokenMetadata metadata = issuedTokens.get(token);
-        if (metadata == null) {
-            verifySignature(token); // ensure invalid tokens still trigger signature validation errors
+        ApplicationSession session = sessionRepository.findByTokenAndActiveTrue(token).orElse(null);
+        decryptAndVerify(token);
+
+        if (session == null) {
             return new TokenValidationResponse(false, null, null, null, null);
         }
 
-        if (revokedTokens.contains(token)) {
+        if (!session.isActive() || session.getExpiresAt().isBefore(Instant.now())) {
             return new TokenValidationResponse(false, null, null, null, null);
         }
 
-        verifySignature(token);
-
-        if (metadata.expiresAt().isBefore(Instant.now())) {
-            return new TokenValidationResponse(false, null, null, null, null);
-        }
-
-        return new TokenValidationResponse(true, metadata.subject(), metadata.clientId(), List.copyOf(metadata.scopes()), metadata.expiresAt());
+        return new TokenValidationResponse(true, session.getSubject(), session.getClientId(),
+                List.copyOf(session.getScopeSet()), session.getExpiresAt());
     }
 
     private TokenResponse issueToken(String clientId, String subject, Set<String> requestedScopes, Optional<String> audience) {
@@ -143,98 +137,94 @@ public class TokenService {
         String scope = String.join(" ", requestedScopes);
         String jti = UUID.randomUUID().toString();
 
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("iss", "com.example.access-token");
-        payload.put("sub", subject);
-        audience.ifPresent(value -> payload.put("aud", value));
-        payload.put("exp", expiresAt.getEpochSecond());
-        payload.put("iat", issuedAt.getEpochSecond());
-        payload.put("client_id", clientId);
+        JWTClaimsSet.Builder claimsBuilder = new JWTClaimsSet.Builder()
+                .issuer("com.example.access-token")
+                .subject(subject)
+                .expirationTime(java.util.Date.from(expiresAt))
+                .issueTime(java.util.Date.from(issuedAt))
+                .claim("client_id", clientId)
+                .jwtID(jti);
+        audience.ifPresent(value -> claimsBuilder.audience(List.of(value)));
         if (!scope.isBlank()) {
-            payload.put("scope", scope);
+            claimsBuilder.claim("scope", scope);
         }
-        payload.put("jti", jti);
 
-        String token = sign(payload);
-        TokenMetadata metadata = new TokenMetadata(clientId, subject, requestedScopes, expiresAt);
-        issuedTokens.put(token, metadata);
-        revokedTokens.remove(token);
+        String token = signAndEncrypt(claimsBuilder.build());
+
+        ApplicationSession session = new ApplicationSession();
+        session.setToken(token);
+        session.setClientId(clientId);
+        session.setSubject(subject);
+        session.setScope(scope);
+        session.setIssuedAt(issuedAt);
+        session.setExpiresAt(expiresAt);
+        session.setJti(jti);
+        session.setActive(true);
+        sessionRepository.save(session);
 
         return new TokenResponse(token, "Bearer", DEFAULT_TOKEN_TTL_SECONDS, issuedAt, List.copyOf(requestedScopes));
     }
 
     public void revoke(String token) {
-        if (!issuedTokens.containsKey(token)) {
-            verifySignature(token);
+        ApplicationSession session = sessionRepository.findByToken(token).orElse(null);
+        if (session == null) {
+            decryptAndVerify(token);
             throw new InvalidTokenException("Token was not issued by this authorization server");
         }
 
-        revokedTokens.add(token);
+        session.setActive(false);
+        sessionRepository.save(session);
     }
 
     public JwksResponse jwks() {
-        RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
+        RSAPublicKey publicKey = keyProvider.getJwsPublicKey();
         String modulus = toBase64Url(publicKey.getModulus().toByteArray());
         String exponent = toBase64Url(publicKey.getPublicExponent().toByteArray());
-        JwkKey key = new JwkKey("RSA", keyId, "RS256", "sig", modulus, exponent);
+        JwkKey key = new JwkKey("RSA", keyProvider.getJwsKeyId(), "RS256", "sig", modulus, exponent);
         return new JwksResponse(List.of(key));
     }
 
-    private void verifySignature(String token) {
-        String[] segments = token.split("\\.");
-        if (segments.length != 3) {
-            throw new InvalidTokenException("Malformed JWT");
-        }
-
+    private SignedJWT decryptAndVerify(String token) {
         try {
-            Signature signature = Signature.getInstance("SHA256withRSA");
-            signature.initVerify(keyPair.getPublic());
-            signature.update((segments[0] + "." + segments[1]).getBytes(StandardCharsets.US_ASCII));
-            byte[] signatureBytes = BASE64_URL_DECODER.decode(segments[2]);
-            if (!signature.verify(signatureBytes)) {
+            JWEObject jweObject = JWEObject.parse(token);
+            jweObject.decrypt(new RSADecrypter(keyProvider.getJwePrivateKey()));
+            SignedJWT signedJWT = jweObject.getPayload().toSignedJWT();
+            if (signedJWT == null) {
+                throw new InvalidTokenException("Malformed JWT");
+            }
+            boolean valid = signedJWT.verify(new RSASSAVerifier(keyProvider.getJwsPublicKey()));
+            if (!valid) {
                 throw new InvalidTokenException("JWT signature could not be verified");
             }
-
-            byte[] headerBytes = BASE64_URL_DECODER.decode(segments[0]);
-            Map<?, ?> header = objectMapper.readValue(headerBytes, Map.class);
-            Object kid = header.get("kid");
-            if (kid == null || !Objects.equals(kid.toString(), keyId)) {
+            if (!keyProvider.getJwsKeyId().equals(signedJWT.getHeader().getKeyID())) {
                 throw new InvalidTokenException("Unknown signing key");
             }
-        } catch (InvalidTokenException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new InvalidTokenException("Unable to verify token: " + e.getMessage());
+            return signedJWT;
+        } catch (InvalidTokenException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new InvalidTokenException("Unable to verify token: " + ex.getMessage());
         }
     }
 
-    private String sign(Map<String, Object> payload) {
-        Map<String, Object> header = Map.of(
-                "alg", "RS256",
-                "typ", "JWT",
-                "kid", keyId
-        );
-
+    private String signAndEncrypt(JWTClaimsSet claims) {
         try {
-            byte[] headerBytes = objectMapper.writeValueAsBytes(header);
-            byte[] payloadBytes = objectMapper.writeValueAsBytes(payload);
-            String encodedHeader = BASE64_URL_ENCODER.encodeToString(headerBytes);
-            String encodedPayload = BASE64_URL_ENCODER.encodeToString(payloadBytes);
-            String signingInput = encodedHeader + "." + encodedPayload;
+            JWSHeader jwsHeader = new JWSHeader.Builder(JWSAlgorithm.RS256)
+                    .keyID(keyProvider.getJwsKeyId())
+                    .type(JOSEObjectType.JWT)
+                    .build();
+            SignedJWT signedJWT = new SignedJWT(jwsHeader, claims);
+            signedJWT.sign(new RSASSASigner(keyProvider.getJwsPrivateKey()));
 
-            Signature signature = Signature.getInstance("SHA256withRSA");
-            signature.initSign(keyPair.getPrivate());
-            signature.update(signingInput.getBytes(StandardCharsets.US_ASCII));
-            byte[] signed = signature.sign();
-            String encodedSignature = BASE64_URL_ENCODER.encodeToString(signed);
-            return signingInput + "." + encodedSignature;
-        } catch (Exception e) {
-            throw new IllegalStateException("Unable to sign JWT", e);
+            JWEHeader jweHeader = new JWEHeader.Builder(JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A256GCM)
+                    .contentType("JWT")
+                    .build();
+            JWEObject jweObject = new JWEObject(jweHeader, new Payload(signedJWT));
+            jweObject.encrypt(new RSAEncrypter(keyProvider.getJwePublicKey()));
+            return jweObject.serialize();
+        } catch (JOSEException ex) {
+            throw new IllegalStateException("Unable to sign and encrypt JWT", ex);
         }
-    }
-
-    private void registerClient(String clientId, String clientSecret, Set<String> scopes) {
-        registeredClients.put(clientId, new RegisteredClient(clientId, hashingService.hashToBase64(clientSecret), scopes));
     }
 
     private Optional<String> resolveAudience(TokenRequest request) {
@@ -247,17 +237,6 @@ public class TokenService {
         return Optional.empty();
     }
 
-    private String generateKeyId(RSAPublicKey publicKey) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] encoded = publicKey.getEncoded();
-            byte[] hash = digest.digest(encoded);
-            return BASE64_URL_ENCODER.encodeToString(hash).substring(0, 16);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("Unable to derive key identifier", e);
-        }
-    }
-
     private String toBase64Url(byte[] value) {
         if (value.length > 1 && value[0] == 0) {
             byte[] withoutSignByte = new byte[value.length - 1];
@@ -265,14 +244,5 @@ public class TokenService {
             return BASE64_URL_ENCODER.encodeToString(withoutSignByte);
         }
         return BASE64_URL_ENCODER.encodeToString(value);
-    }
-
-    private record RegisteredClient(String clientId, String hashedSecret, Set<String> allowedScopes) {
-        boolean matchesSecret(String rawSecret, HashingService hashingService) {
-            return hashedSecret.equals(hashingService.hashToBase64(rawSecret));
-        }
-    }
-
-    private record TokenMetadata(String clientId, String subject, Set<String> scopes, Instant expiresAt) {
     }
 }

@@ -8,7 +8,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.Base64;
 
 @Service
@@ -54,16 +53,15 @@ public class ApplicationRegistryService {
             throw new InvalidClientException("Client authentication required");
         }
 
-        ApplicationClient client = repository.findByClientIdAndActiveTrue(clientId)
-                .filter(found -> found.getAuthMode() == AuthMode.BASIC)
+        ApplicationClient client = repository.findByClientIdAndAuthModeAndActiveTrue(clientId, AuthMode.BASIC)
                 .orElseThrow(() -> new InvalidClientException("Invalid client credentials"));
 
-        if (isExpired(client)) {
+        if (!client.isActive()) {
             throw new InvalidClientException("Client is inactive or expired");
         }
 
         String hashedSecret = hashingService.hashToBase64(clientSecret);
-        if (!hashedSecret.equals(client.getClientSecretHash())) {
+        if (!hashedSecret.equals(client.getClientSecret())) {
             throw new InvalidClientException("Invalid client credentials");
         }
 
@@ -77,20 +75,14 @@ public class ApplicationRegistryService {
         }
 
         String hashedToken = hashingService.hashToBase64(token);
-        ApplicationClient client = repository.findByStaticTokenHashAndActiveTrue(hashedToken)
-                .filter(found -> found.getAuthMode() == AuthMode.STATIC_TOKEN)
+        ApplicationClient client = repository.findByClientSecretAndAuthModeAndActiveTrue(hashedToken, AuthMode.STATIC_TOKEN)
                 .orElseThrow(() -> new InvalidClientException("Invalid client credentials"));
 
-        if (isExpired(client)) {
+        if (!client.isActive()) {
             throw new InvalidClientException("Client is inactive or expired");
         }
 
         return client;
-    }
-
-    private boolean isExpired(ApplicationClient client) {
-        Instant expiresAt = client.getExpiresAt();
-        return !client.isActive() || (expiresAt != null && expiresAt.isBefore(Instant.now()));
     }
 
     private String extractTokenValue(String authorizationHeader) {

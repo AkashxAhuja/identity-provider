@@ -9,6 +9,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    implementation("com.nimbusds:nimbus-jose-jwt:9.37.3")
 
     runtimeOnly("com.h2database:h2")
 

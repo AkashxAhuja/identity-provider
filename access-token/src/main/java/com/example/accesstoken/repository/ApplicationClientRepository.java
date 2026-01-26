@@ -1,6 +1,7 @@
 package com.example.accesstoken.repository;
 
 import com.example.accesstoken.model.ApplicationClient;
+import com.example.accesstoken.model.AuthMode;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Optional;
@@ -9,5 +10,7 @@ public interface ApplicationClientRepository extends JpaRepository<ApplicationCl
 
     Optional<ApplicationClient> findByClientIdAndActiveTrue(String clientId);
 
-    Optional<ApplicationClient> findByStaticTokenHashAndActiveTrue(String staticTokenHash);
+    Optional<ApplicationClient> findByClientIdAndAuthModeAndActiveTrue(String clientId, AuthMode authMode);
+
+    Optional<ApplicationClient> findByClientSecretAndAuthModeAndActiveTrue(String clientSecret, AuthMode authMode);
 }
